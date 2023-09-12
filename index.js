@@ -3,9 +3,36 @@ const app = express();
 const cors = require("cors");
 require("dotenv").config();
 const bodyParser = require("body-parser");
+const mongoose = require("mongoose");
 
-const users = [];
-const exercises = [];
+const MONGO_URL = process.env["MONGO_URL"];
+mongoose.connect(MONGO_URL);
+
+const userSchema = new mongoose.Schema(
+  {
+    username: {
+      type: String,
+      required: true,
+    },
+    log: [
+      {
+        description: String,
+        duration: {
+          type: Number,
+          required: true,
+        },
+        date: {
+          type: String,
+          required: true,
+        },
+      },
+    ],
+  },
+  {
+    versionKey: false,
+  }
+);
+const User = mongoose.model("User", userSchema);
 
 app.use(cors());
 app.use(express.static("public"));
@@ -14,27 +41,31 @@ app.get("/", (req, res) => {
   res.sendFile(__dirname + "/views/index.html");
 });
 
-app.post("/api/users", function (req, res) {
-  const newUser = {
-    username: req.body.username,
-    _id: (Math.random() * 100).toFixed(0),
-  };
-  users.push(newUser);
-  return res.json(newUser);
+app.get("/api/users", async function (req, res) {
+  try {
+    const users = await User.find({});
+    const preparedUsers = users.map(({ _id, username }) => ({ _id, username }));
+    return res.json(preparedUsers);
+  } catch (e) {
+    return res.json({ error: "Users not found." });
+  }
 });
 
-app.get("/api/users", function (req, res) {
-  res.json(users);
+app.post("/api/users", async function (req, res) {
+  const newUser = new User({ username: req.body.username });
+  try {
+    await newUser.save();
+    return res.json({ _id: newUser._id, username: newUser.username });
+  } catch (e) {
+    return res.json({ error: "User not created." });
+  }
 });
 
-app.post("/api/users/:_id/exercises", function (req, res) {
+app.post("/api/users/:_id/exercises", async function (req, res) {
   const { description, duration, date } = req.body;
   const { _id } = req.params;
 
-  const user = findUserById(_id);
-  if (!user) {
-    return res.json({ error: "Invalid user id" });
-  }
+  const user = await findUserById(_id);
 
   const expDate = date ? new Date(date) : new Date();
   const newExercise = {
@@ -44,26 +75,25 @@ app.post("/api/users/:_id/exercises", function (req, res) {
     date: expDate.toDateString().toString(),
     _id,
   };
-
-  exercises.push(newExercise);
-  return res.json(newExercise);
+  try {
+    user.log.push(newExercise);
+    await user.save();
+    return res.json(newExercise);
+  } catch (e) {
+    return res.json({ error: "Exercise not added." });
+  }
 });
 
-app.get("/api/users/:_id/logs", function (req, res) {
+app.get("/api/users/:_id/logs", async function (req, res) {
   const { from, to, limit } = req.query;
-  const { _id } = req.params;
-  const user = findUserById(_id);
-  if (!user) {
-    return res.json({ error: "Invalid user id" });
-  }
+  const { _id: userId } = req.params;
+  const user = await findUserById(userId);
 
-  let userExercises = exercises
-    .filter((ex) => ex._id === _id)
-    .map((ex) => ({
-      description: ex.description,
-      duration: ex.duration,
-      date: ex.date,
-    }));
+  let userExercises = user.log.map((ex) => ({
+    description: ex.description,
+    duration: ex.duration,
+    date: ex.date,
+  }));
 
   if (from) {
     userExercises = filterByDate(userExercises, "from", from);
@@ -80,7 +110,7 @@ app.get("/api/users/:_id/logs", function (req, res) {
   const log = {
     username: user.username,
     count: userExercises.length,
-    _id,
+    _id: userId,
     log: userExercises,
   };
   return res.json(log);
@@ -90,8 +120,14 @@ const listener = app.listen(process.env.PORT || 3000, () => {
   console.log("Your app is listening on port " + listener.address().port);
 });
 
-function findUserById(id) {
-  return users.find(({ _id }) => _id === id);
+async function findUserById(id) {
+  let user;
+  try {
+    user = await User.findById(id);
+  } catch (e) {
+    return res.json({ error: "User not found." });
+  }
+  return user;
 }
 
 function filterByDate(exercises, type, value) {
